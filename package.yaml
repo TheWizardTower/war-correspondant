@@ -1,0 +1,47 @@
+name: war-correspondant
+version: 0.0.1
+synopsis: This is a utility to send spans, telemetry, and events to Honeycomb.
+author: Adam McCullough <merlinfmct87@gmail.com>
+maintainer: Adam McCullough <merlinfmct87@gmail.com>
+copyright: © 2022 Adam McCullough
+license: MIT
+tested-with: GHC == 8.8.4
+
+ghc-options: -Wall -Wwarn -fwarn-tabs
+
+dependencies:
+  - base
+  - core-data
+  - core-program >= 0.2.9
+  - core-telemetry >= 0.2.0.1
+  - core-text >= 0.3.2
+  - random
+  - safe-exceptions
+  - stm
+
+library:
+  source-dirs:
+    - lib
+  exposed-modules:
+    - Core.Telemetry.Unsafe
+  other-modules: []
+
+executables:
+  correspondant:
+    source-dirs:
+      - src
+    main: JournalistMain.hs
+    ghc-options: -threaded
+    other-modules: []
+    dependencies:
+      - telemetry-runner
+
+tests:
+  check:
+    dependencies:
+      - hspec
+    ghc-options: -threaded
+    source-dirs:
+      - tests
+    main: TestSuite.hs
+    other-modules: []
