@@ -10,14 +10,15 @@ import Core.Telemetry
 import Core.Telemetry.Unsafe
 import Core.Text
 
+import Chrono.TimeStamp (TimeStamp (..))
 import Control.Exception (Exception (..))
 import Control.Monad
 import Data.Aeson
 import Data.ByteString
-import Data.Maybe (fromMaybe, fromJust)
-import Chrono.TimeStamp (TimeStamp (..))
+import Data.Maybe (fromJust, fromMaybe)
 import GHC.Int
 import Safe
+
 -- import System.Environment (lookupEnv)
 
 version :: Version
@@ -47,19 +48,19 @@ myConfig =
             [quote|Encloses a command (specified via -c) in a span, optionally attaching to an existing trace and root span|]
             [ Option "label" (Just 'l') (Value "LABEL") [quote|Step label|]
             , Argument "command" [quote|Command to run, and report on|]
---            , Option
---                "span-id"
---                (Just 's')
---                Empty
---                [quote|Root Span ID to attach to. Overrides the environment variable.|]
---            , Option "trace-id" (Just 't') Empty [quote|Root Trace ID to attach to. Overrides the environment variable.|]
---            , Option "start-time" Nothing Empty [quote|Start time of the process we're observing. Overrides the environment variable.|]
---            , Variable "PARENT_SPAN_ID" [quote|Parent Span ID to use in enclose-span|]
---            , Variable "ROOT_SPAN_ID" [quote|Root Span ID to use in enclose-span|]
---            , Variable "SPAN_LABEL" [quote|Label for this step|]
---            , Variable "START_TIME" [quote|Start time of the process we're observing|]
---            , Variable "TRACE_ID" [quote|Trace ID to use in enclose-span|]
-            , Variable "TRACE_SPAN_DATA" [quote|JSON Blob for the trace span data value|]
+            , --            , Option
+              --                "span-id"
+              --                (Just 's')
+              --                Empty
+              --                [quote|Root Span ID to attach to. Overrides the environment variable.|]
+              --            , Option "trace-id" (Just 't') Empty [quote|Root Trace ID to attach to. Overrides the environment variable.|]
+              --            , Option "start-time" Nothing Empty [quote|Start time of the process we're observing. Overrides the environment variable.|]
+              --            , Variable "PARENT_SPAN_ID" [quote|Parent Span ID to use in enclose-span|]
+              --            , Variable "ROOT_SPAN_ID" [quote|Root Span ID to use in enclose-span|]
+              --            , Variable "SPAN_LABEL" [quote|Label for this step|]
+              --            , Variable "START_TIME" [quote|Start time of the process we're observing|]
+              --            , Variable "TRACE_ID" [quote|Trace ID to use in enclose-span|]
+              Variable "TRACE_SPAN_DATA" [quote|JSON Blob for the trace span data value|]
             ]
         , Command "stop-trace" [quote|Close an already-opened root span (and therefore the associated trace)|] [Option "span-id" (Just 's') Empty [quote|Span ID to close|]]
         ]
@@ -81,7 +82,7 @@ journalist = do
         -- These two may be unreachable, depending on how unbeliever handles
         -- things.
         Just (LongName cmd) -> throw $ InvalidCommand $ intoRope $ "Invalid command " <> cmd <> " Passed."
-        Nothing -> throw $ InvalidCommand  "No command given."
+        Nothing -> throw $ InvalidCommand "No command given."
 
 startTrace :: Program Env ()
 startTrace = do
@@ -91,10 +92,11 @@ startTrace = do
     write $ intoRope $ encode spanTSD
     pure ()
 
-data ProgramError = InvalidCommand Rope 
-                  | MissingValues Rope
-                  | InvalidValue Rope
-  deriving (Eq, Ord, Show)
+data ProgramError
+    = InvalidCommand Rope
+    | MissingValues Rope
+    | InvalidValue Rope
+    deriving (Eq, Ord, Show)
 
 instance Exception ProgramError
 
@@ -103,14 +105,14 @@ runInSpan = do
     tsd <- assembleTSD'
     command <- queryArgument "command"
     tid <- case (traceID tsd) of
-      Nothing -> throw $ InvalidValue "No Trace ID given in enclose-span command"
-      Just t -> pure t
+        Nothing -> throw $ InvalidValue "No Trace ID given in enclose-span command"
+        Just t -> pure t
     sid <- case (spanID tsd) of
-      Nothing -> throw $ InvalidValue "No Span ID given in enclose-span command"
-      Just s -> pure s
+        Nothing -> throw $ InvalidValue "No Span ID given in enclose-span command"
+        Just s -> pure s
     usingTrace tid sid $ do
-      encloseSpan (spanLabel tsd) $ do
-        runCommand command
+        encloseSpan (spanLabel tsd) $ do
+            runCommand command
 
 endTrace :: Program Env ()
 endTrace = do
@@ -126,8 +128,8 @@ assembleTSD' = do
         traceSpanData'' = eitherDecode traceSpanData' :: Either String TraceSpanData
     traceSpanData''' <- case traceSpanData'' of
         Left errStr -> do
-          critical $ "failed to parse JSON!\n" <> (intoRope errStr)
-          pure emptyTSD
+            critical $ "failed to parse JSON!\n" <> (intoRope errStr)
+            pure emptyTSD
         Right tsd -> pure tsd
 
     debugS "traceSpanData" traceSpanData
@@ -142,7 +144,7 @@ assembleTSD = do
     let traceSpanData' = fromRope <$> traceSpanData :: Maybe ByteString
         traceSpanData'' = join $ decodeStrict <$> traceSpanData' :: Maybe TraceSpanData
         traceSpanData''' = fromMaybe emptyTSD traceSpanData''
- 
+
     span_id <- Span <$> getArgAndEnvValue "span-id" "ROOT_SPAN_ID"
     trace <- Trace <$> getArgAndEnvValue "trace-id" "TRACE_ID"
     label <- getArgAndEnvValue "label" "SPAN_LABEL"
@@ -150,16 +152,17 @@ assembleTSD = do
     psid <- Span <$> getArgAndEnvValue "parent-span" "PARENT_SPAN_ID"
     let start' = (readMay $ fromRope start_time) :: Maybe Int64
     start'' <- case start' of
-          Nothing -> throw $ InvalidValue "Invalid Start Time"
-          Just startTime -> pure $ TimeStamp startTime
-    let tsd = traceSpanData'''
-         { start = start''
-         , traceID = Just trace
-         , spanID = Just span_id
-         , spanLabel = label
-         , runtime = Nothing
-         , parentSpanID = Just psid
-         }
+        Nothing -> throw $ InvalidValue "Invalid Start Time"
+        Just startTime -> pure $ TimeStamp startTime
+    let tsd =
+            traceSpanData'''
+                { start = start''
+                , traceID = Just trace
+                , spanID = Just span_id
+                , spanLabel = label
+                , runtime = Nothing
+                , parentSpanID = Just psid
+                }
     pure tsd
 
 getArgAndEnvValue :: LongName -> LongName -> Program Env Rope
@@ -167,8 +170,8 @@ getArgAndEnvValue optName envName = do
     optMaybe <- queryOptionValue optName
     envMaybe <- queryEnvironmentValue envName
     concrete <- case (optMaybe, envMaybe) of
-      (Just optValue, _) -> pure optValue
-      (Nothing, Just envValue) -> pure envValue
-      (Nothing, Nothing) -> throw $ MissingValues $ "Missing values for " <> (intoRope $ show optName) <> " and " <> (intoRope $ show envName)
+        (Just optValue, _) -> pure optValue
+        (Nothing, Just envValue) -> pure envValue
+        (Nothing, Nothing) -> throw $ MissingValues $ "Missing values for " <> (intoRope $ show optName) <> " and " <> (intoRope $ show envName)
 
     pure concrete
