@@ -11,7 +11,7 @@ module Core.Telemetry.Unsafe where
 
 import Core.Text
 import Core.Program
-import Core.Encoding.Json ()
+-- import Core.Encoding.Json (JsonValue (..))
 import Core.System
 import Core.Telemetry
 
@@ -29,12 +29,21 @@ import System.Random (randomIO)
 deriving instance Generic Span
 deriving instance Generic Trace
 instance ToJSON Span where
-  toJSON (Span spanIdentifier) = object ["span-id" .= (fromRope spanIdentifier :: Text)]
+  toJSON (Span spanIdentifier) = String (fromRope spanIdentifier :: Text)
 instance ToJSON Trace where
-  toJSON (Trace traceIdentifier) = object ["trace-id" .= (fromRope traceIdentifier :: Text)]
+  toJSON (Trace traceIdentifier) = String (fromRope traceIdentifier :: Text)
 
-deriving instance FromJSON Trace
-deriving instance FromJSON Span
+instance FromJSON Trace where
+  parseJSON = withText "Trace" (pure . intoTrace . intoRope)
+    where
+      intoTrace :: Rope -> Trace
+      intoTrace tid = Trace tid
+
+instance FromJSON Span where
+  parseJSON = withText "Trace" (pure . intoSpan . intoRope)
+    where
+      intoSpan :: Rope -> Span
+      intoSpan sid = Span sid
 
 data TraceSpanData = TraceSpanData
   { start :: TimeStamp
@@ -57,7 +66,8 @@ emptyTSD = TraceSpanData
 
 instance ToJSON TraceSpanData where
   toJSON tsd = object
-    [ "start" .= start tsd
+    [ "start" .= (unTimeStamp $ start tsd)
+--    [ "start" .= (start tsd)
     , "traceID" .= traceID tsd
     , "spanID" .= spanID tsd
     , "spanLabel" .= (fromRope $ spanLabel tsd :: Text)
@@ -68,12 +78,12 @@ instance ToJSON TraceSpanData where
 
 instance FromJSON TraceSpanData where
   parseJSON (Object v) = TraceSpanData
-    <$> v .: "start"
+    <$> (TimeStamp <$> v .: "start")
     <*> v .: "traceID"
     <*> v .: "spanID"
     <*> v .: "spanLabel"
     <*> v .: "runtime"
-    <*> v .: "parentSpanId"
+    <*> v .: "parentSpanID"
   -- Just to silence a very annoying build warning
   parseJSON _ = error "Invalid object"
 

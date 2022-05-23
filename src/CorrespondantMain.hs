@@ -18,7 +18,7 @@ import Data.Maybe (fromMaybe, fromJust)
 import Chrono.TimeStamp (TimeStamp (..))
 import GHC.Int
 import Safe
-import System.Environment (lookupEnv)
+-- import System.Environment (lookupEnv)
 
 version :: Version
 version = $(fromPackage)
@@ -41,20 +41,24 @@ myConfig =
         , Command
             "start-trace"
             [quote|Begins a trace, and a root span, returning both values for later use.|]
-            [Option "label" (Just 'l') Empty [quote|Label for the root span|]]
+            [Option "label" (Just 'l') (Value "LABEL") [quote|Label for the root span|]]
         , Command
             "enclose-span"
             [quote|Encloses a command (specified via -c) in a span, optionally attaching to an existing trace and root span|]
-            [ Option "label" (Just 'l') Empty [quote|Step label|]
+            [ Option "label" (Just 'l') (Value "LABEL") [quote|Step label|]
             , Argument "command" [quote|Command to run, and report on|]
-            , Option
-                "span-id"
-                (Just 's')
-                Empty
-                [quote|Root Span ID to attach to. Overrides the environment variable.|]
-            , Option "trace-id" (Just 't') Empty [quote|Root Trace ID to attach to. Overrides the environment variable.|]
-            , Variable "TRACE_ID" [quote|Trace ID to use in enclose-span|]
-            , Variable "ROOT_SPAN_ID" [quote|Trace ID to use in enclose-span|]
+--            , Option
+--                "span-id"
+--                (Just 's')
+--                Empty
+--                [quote|Root Span ID to attach to. Overrides the environment variable.|]
+--            , Option "trace-id" (Just 't') Empty [quote|Root Trace ID to attach to. Overrides the environment variable.|]
+--            , Option "start-time" Nothing Empty [quote|Start time of the process we're observing. Overrides the environment variable.|]
+--            , Variable "PARENT_SPAN_ID" [quote|Parent Span ID to use in enclose-span|]
+--            , Variable "ROOT_SPAN_ID" [quote|Root Span ID to use in enclose-span|]
+--            , Variable "SPAN_LABEL" [quote|Label for this step|]
+--            , Variable "START_TIME" [quote|Start time of the process we're observing|]
+--            , Variable "TRACE_ID" [quote|Trace ID to use in enclose-span|]
             , Variable "TRACE_SPAN_DATA" [quote|JSON Blob for the trace span data value|]
             ]
         , Command "stop-trace" [quote|Close an already-opened root span (and therefore the associated trace)|] [Option "span-id" (Just 's') Empty [quote|Span ID to close|]]
@@ -82,8 +86,8 @@ startTrace :: Program Env ()
 startTrace = do
     label <- queryArgument "label"
     trace <- createTraceId
-    spanDatum <- createSpanId trace label
-    writeS $ toJSON spanDatum
+    spanTSD <- createSpanId trace label
+    write $ intoRope $ encode spanTSD
     pure ()
 
 data ProgramError = InvalidCommand Rope 
@@ -95,7 +99,7 @@ instance Exception ProgramError
 
 runInSpan :: Program Env ()
 runInSpan = do
-    tsd <- assembleTSD
+    tsd <- assembleTSD'
     command <- queryArgument "command"
     tid <- case (traceID tsd) of
       Nothing -> throw $ InvalidValue "No Trace ID given in enclose-span command"
@@ -114,12 +118,30 @@ endTrace = do
     endSpan tsd
     pure ()
 
+assembleTSD' :: Program Env TraceSpanData
+assembleTSD' = do
+    traceSpanData <- queryEnvironmentValue "TRACE_SPAN_DATA"
+    let traceSpanData' = fromMaybe (encode emptyTSD) $ fromRope <$> traceSpanData
+        traceSpanData'' = eitherDecode traceSpanData' :: Either String TraceSpanData
+    traceSpanData''' <- case traceSpanData'' of
+        Left errStr -> do
+          critical $ "failed to parse JSON!\n" <> (intoRope errStr)
+          pure emptyTSD
+        Right tsd -> pure tsd
+
+    debugS "traceSpanData" traceSpanData
+    debugS "traceSpanData'" traceSpanData'
+    debugS "traceSpanData''" traceSpanData''
+    debugS "traceSpanData'''" traceSpanData'''
+    pure traceSpanData'''
+
 assembleTSD :: Program Env TraceSpanData
 assembleTSD = do
     traceSpanData <- queryEnvironmentValue "TRACE_SPAN_DATA"
     let traceSpanData' = fromRope <$> traceSpanData :: Maybe ByteString
         traceSpanData'' = join $ decodeStrict <$> traceSpanData' :: Maybe TraceSpanData
         traceSpanData''' = fromMaybe emptyTSD traceSpanData''
+ 
     span_id <- Span <$> getArgAndEnvValue "span-id" "ROOT_SPAN_ID"
     trace <- Trace <$> getArgAndEnvValue "trace-id" "TRACE_ID"
     label <- getArgAndEnvValue "label" "SPAN_LABEL"
