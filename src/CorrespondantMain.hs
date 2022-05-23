@@ -67,7 +67,8 @@ myConfig =
 main :: IO ()
 main = do
     context <- configure version emptyEnv myConfig
-    executeWith context journalist
+    context' <- initializeTelemetry [consoleExporter, structuredExporter, honeycombExporter] context
+    executeWith context' journalist
 
 journalist :: Program Env ()
 journalist = do
