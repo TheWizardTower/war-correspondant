@@ -7,10 +7,17 @@ module Main where
 
 import Core.Program
 import Core.Telemetry
-import Core.Telemetry.Unsafe (createSpanId, createTraceId, endSpan)
+import Core.Telemetry.Unsafe
 import Core.Text
 
-import Data.Maybe (fromMaybe)
+import Control.Exception (Exception (..))
+import Control.Monad
+import Data.Aeson
+import Data.ByteString
+import Data.Maybe (fromMaybe, fromJust)
+import Chrono.TimeStamp (TimeStamp (..))
+import GHC.Int
+import Safe
 import System.Environment (lookupEnv)
 
 version :: Version
@@ -39,7 +46,7 @@ myConfig =
             "enclose-span"
             [quote|Encloses a command (specified via -c) in a span, optionally attaching to an existing trace and root span|]
             [ Option "label" (Just 'l') Empty [quote|Step label|]
-            , Option "command" (Just 'c') Empty [quote|Command to run, and report on|]
+            , Argument "command" [quote|Command to run, and report on|]
             , Option
                 "span-id"
                 (Just 's')
@@ -48,15 +55,10 @@ myConfig =
             , Option "trace-id" (Just 't') Empty [quote|Root Trace ID to attach to. Overrides the environment variable.|]
             , Variable "TRACE_ID" [quote|Trace ID to use in enclose-span|]
             , Variable "ROOT_SPAN_ID" [quote|Trace ID to use in enclose-span|]
+            , Variable "TRACE_SPAN_DATA" [quote|JSON Blob for the trace span data value|]
             ]
         , Command "stop-trace" [quote|Close an already-opened root span (and therefore the associated trace)|] [Option "span-id" (Just 's') Empty [quote|Span ID to close|]]
         ]
-
-data CommandReport = CommandReport
-    { statusCode :: Int
-    , spanLabel :: Rope
-    , command :: [Rope]
-    }
 
 main :: IO ()
 main = do
@@ -69,46 +71,81 @@ journalist = do
     let commandRope = commandNameFrom params
     case commandRope of
         Just (LongName "start-trace") -> startTrace
-        Just (LongName "end-trace") -> pure ()
-        Just (LongName "enclose-span") -> pure ()
+        Just (LongName "end-trace") -> endTrace
+        Just (LongName "enclose-span") -> runInSpan
         -- These two may be unreachable, depending on how unbeliever handles
         -- things.
-        Just (LongName cmd) -> error $ "Invalid command " <> cmd <> " Passed."
-        Nothing -> error "No command given. Make this spit out the --help page."
-    let label = "some label, get it from config"
-    encloseSpan label $ do
-        write "Hi, we're live from your build server!"
-        telemetry [metric "command" ("ping 127.0.0.1" :: Rope)]
+        Just (LongName cmd) -> throw $ InvalidCommand $ intoRope $ "Invalid command " <> cmd <> " Passed."
+        Nothing -> throw $ InvalidCommand  "No command given."
 
 startTrace :: Program Env ()
 startTrace = do
-    params <- getCommandLine
-    let label = lookupArgument "label" params
-        label' = intoRope $ fromMaybe "exec" label
+    label <- queryArgument "label"
     trace <- createTraceId
-    spanDatum <- createSpanId trace label'
+    spanDatum <- createSpanId trace label
+    writeS $ toJSON spanDatum
     pure ()
+
+data ProgramError = InvalidCommand Rope 
+                  | MissingValues Rope
+                  | InvalidValue Rope
+  deriving (Eq, Ord, Show)
+
+instance Exception ProgramError
+
+runInSpan :: Program Env ()
+runInSpan = do
+    tsd <- assembleTSD
+    command <- queryArgument "command"
+    tid <- case (traceID tsd) of
+      Nothing -> throw $ InvalidValue "No Trace ID given in enclose-span command"
+      Just t -> pure t
+    sid <- case (spanID tsd) of
+      Nothing -> throw $ InvalidValue "No Span ID given in enclose-span command"
+      Just s -> pure s
+    usingTrace tid sid $ do
+      encloseSpan (spanLabel tsd) $ do
+        runCommand command
 
 endTrace :: Program Env ()
 endTrace = do
-    params <- getCommandLine
-    let spanArg = lookupArgument "span-id" params
-        spanEnv = lookupEnvironmentValue "ROOT_SPAN_ID" params
-        traceARg = lookupArgument "trace-id" params
-        traceEnv = lookupEnvironmentValue "TRACE_ID" params
-        span' = resolveConflict spanArg spanEnv "bah"
-        trace' = resolveConflict traceArg traceEnv "bah"
-        datum = emptyDatum
+    tsd <- assembleTSD
 
-    trace <- createTraceId
-
-    endSpan datum
+    endSpan tsd
     pure ()
 
--- This should probably throw an error in the default case.
-resolveConflict :: Maybe Rope -> Maybe Rope -> Rope -> Rope
-resolveConflict arg env defaultValue =
-    case (arg, env) of
-        (Just argValue, _) -> argValue
-        (Nothing, Just envValue) -> envValue
-        (Nothing, Nothing) -> defaultValue
+assembleTSD :: Program Env TraceSpanData
+assembleTSD = do
+    traceSpanData <- queryEnvironmentValue "TRACE_SPAN_DATA"
+    let traceSpanData' = fromRope <$> traceSpanData :: Maybe ByteString
+        traceSpanData'' = join $ decodeStrict <$> traceSpanData' :: Maybe TraceSpanData
+        traceSpanData''' = fromMaybe emptyTSD traceSpanData''
+    span_id <- Span <$> getArgAndEnvValue "span-id" "ROOT_SPAN_ID"
+    trace <- Trace <$> getArgAndEnvValue "trace-id" "TRACE_ID"
+    label <- getArgAndEnvValue "label" "SPAN_LABEL"
+    start_time <- getArgAndEnvValue "start-time" "START_TIME"
+    psid <- Span <$> getArgAndEnvValue "parent-span" "PARENT_SPAN_ID"
+    let start' = (readMay $ fromRope start_time) :: Maybe Int64
+    start'' <- case start' of
+          Nothing -> throw $ InvalidValue "Invalid Start Time"
+          Just startTime -> pure $ TimeStamp startTime
+    let tsd = traceSpanData'''
+         { start = start''
+         , traceID = Just trace
+         , spanID = Just span_id
+         , spanLabel = label
+         , runtime = Nothing
+         , parentSpanID = Just psid
+         }
+    pure tsd
+
+getArgAndEnvValue :: LongName -> LongName -> Program Env Rope
+getArgAndEnvValue optName envName = do
+    optMaybe <- queryOptionValue optName
+    envMaybe <- queryEnvironmentValue envName
+    concrete <- case (optMaybe, envMaybe) of
+      (Just optValue, _) -> pure optValue
+      (Nothing, Just envValue) -> pure envValue
+      (Nothing, Nothing) -> throw $ MissingValues $ "Missing values for " <> (intoRope $ show optName) <> " and " <> (intoRope $ show envName)
+
+    pure concrete

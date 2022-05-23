@@ -11,13 +11,17 @@ ghc-options: -Wall -Wwarn -fwarn-tabs
 
 dependencies:
   - base
+  - aeson
+  - bytestring
+  - chronologique
   - core-data
   - core-program >= 0.2.9
   - core-telemetry >= 0.2.0.1
   - core-text >= 0.3.2
   - random
-  - safe-exceptions
+  - safe
   - stm
+  - text
 
 library:
   source-dirs:
@@ -34,7 +38,7 @@ executables:
     ghc-options: -threaded
     other-modules: []
     dependencies:
-      - telemetry-runner
+      - war-correspondant
 
 tests:
   check:
