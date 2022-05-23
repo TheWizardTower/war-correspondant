@@ -34,7 +34,7 @@ executables:
   correspondant:
     source-dirs:
       - src
-    main: JournalistMain.hs
+    main: CorrespondantMain.hs
     ghc-options: -threaded
     other-modules: []
     dependencies:
